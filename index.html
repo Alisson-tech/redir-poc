@@ -83,7 +83,7 @@
 
         // Parseia os cookies em um objeto para facilitar análise
         var cookieMap = {};
-        allCookies.split(';').forEach(function(c) {
+        allCookies.split(';').forEach(function (c) {
             var parts = c.trim().split('=');
             var name = parts.shift();
             var value = parts.join('=');
